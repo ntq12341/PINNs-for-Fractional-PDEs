@@ -1,46 +1,42 @@
-# main.py
-import torch
+"""Run one fPINN solve for the smooth Poisson example in Section 4.1.1."""
+
 import numpy as np
-from network import fPINN, build_loss_1d_poisson, train
+import torch
+
 from error import relative_l2_error
-from utils import exact_solution_poisson, generate_training_data
+from network import build_loss_poisson, fPINN, train
+from utils import exact_solution_poisson
 
-# ===== THAM SỐ BÀI TOÁN =====
-alpha = 1.5
-N = 20                     # số điểm lưới (λ = N)
-x_train, f_train, dx = generate_training_data(N, alpha)
 
-# ===== THAM SỐ MẠNG =====
-layers = [1, 20, 20, 20, 20, 1]   # input: x, output: u_NN
-learning_rate = 1e-4
-iterations = 100000
+def main():
+    alpha = 1.5
+    N = 20
+    order = 1
 
-# ===== THIẾT BỊ =====
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    layers = [1, 20, 20, 20, 20, 1]
+    learning_rate = 1e-4
+    iterations = 100000
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# ===== KHỞI TẠO MÔ HÌNH, LOSS, OPTIMIZER =====
-model = fPINN(layers).to(device)
-loss_fn = build_loss_1d_poisson(model, x_train, f_train, N, alpha, dx, device)
-optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=20000, gamma=0.5)  # optional
+    torch.set_default_dtype(torch.float64)
+    model = fPINN(layers).to(device)
+    loss_fn = build_loss_poisson(model, N=N, alpha=alpha, order=order, device=device, smooth=True)
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-# ===== TRAINING =====
-print("Bắt đầu training...")
-loss_hist = train(model, loss_fn, optimizer, scheduler, iterations, log_freq=2000, device=device)
+    print("Training 1D fractional Poisson fPINN...")
+    history = train(model, loss_fn, optimizer, iterations, log_freq=2000)
 
-# ===== ĐÁNH GIÁ =====
-model.eval()
-x_test = np.linspace(0, 1, 1000).reshape(-1,1)
-x_test_tensor = torch.tensor(x_test, dtype=torch.float32, device=device)
-with torch.no_grad():
-    u_pred = model(x_test_tensor).cpu().numpy().flatten()
-u_exact = exact_solution_poisson(x_test)
-err = relative_l2_error(u_pred, u_exact)
-print(f"Relative L2 error: {err:.2e}")
+    model.eval()
+    x_test = np.linspace(0.0, 1.0, 1000).reshape(-1, 1)
+    x_test_tensor = torch.tensor(x_test, dtype=torch.float64, device=device)
+    with torch.no_grad():
+        u_pred = model(x_test_tensor).cpu().numpy().reshape(-1)
 
-# # (Tùy chọn) Vẽ đồ thị
-# import matplotlib.pyplot as plt
-# plt.plot(x_test, u_exact, 'k-', label='Exact')
-# plt.plot(x_test, u_pred, 'r--', label='fPINN')
-# plt.legend()
-# plt.show()
+    u_exact = exact_solution_poisson(x_test)
+    err = relative_l2_error(u_pred, u_exact)
+    print(f"Final loss: {history['loss_final']:.3e}")
+    print(f"Relative L2 error: {err:.3e}")
+
+
+if __name__ == "__main__":
+    main()

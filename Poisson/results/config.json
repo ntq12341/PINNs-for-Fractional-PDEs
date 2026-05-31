@@ -1,0 +1,39 @@
+{
+  "alpha": 1.5,
+  "ns": [
+    10,
+    20,
+    40
+  ],
+  "orders": [
+    1,
+    2,
+    3
+  ],
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "learning_rates": [
+    "1e-3",
+    "1e-4"
+  ],
+  "iterations": 20000,
+  "fig5_ns": [
+    10
+  ],
+  "fig5_lr": 0.001,
+  "fig5_iterations": 2,
+  "fig5_seed": 0,
+  "eval_points": 20,
+  "width": 4,
+  "depth": 1,
+  "device": "cpu",
+  "only": "fig5",
+  "layers": [
+    1,
+    4,
+    1
+  ]
+}

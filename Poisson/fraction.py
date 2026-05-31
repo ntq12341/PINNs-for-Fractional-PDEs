@@ -1,10 +1,10 @@
 # fraction.py
 import numpy as np
-from scipy.special import comb, gamma
+from scipy.special import binom, gamma as gamma_fn
 
 def gl_coefficients(alpha, k):
     """(-1)^k * C(alpha, k)"""
-    return (-1)**k * comb(alpha, k)
+    return (-1)**k * binom(alpha, k)
 
 def fractional_laplacian_1d(u_vals, alpha, dx):
     """
@@ -41,7 +41,7 @@ def caputo_l1(u_history, dt, gamma):
     """
     m = len(u_history) - 1
     coeffs = np.array([(l+1)**(1-gamma) - l**(1-gamma) for l in range(m+1)])
-    deriv = (1.0 / gamma(2-gamma) / (dt**gamma)) * (
+    deriv = (1.0 / gamma_fn(2-gamma) / (dt**gamma)) * (
         -coeffs[m-1]*u_history[0] + coeffs[0]*u_history[m] +
         sum((coeffs[m-k] - coeffs[m-k-1]) * u_history[k] for k in range(1, m))
     )

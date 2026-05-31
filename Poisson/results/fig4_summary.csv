@@ -1,0 +1,2 @@
+order,N,dx,learning_rate,iterations,mean_error,std_error,best_loss_error,best_loss
+1,10,0.1,0.001,1,2.3148977785694194,0.0,2.3148977785694194,0.024930074894051153

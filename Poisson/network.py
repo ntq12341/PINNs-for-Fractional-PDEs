@@ -1,89 +1,113 @@
-# network.py
+"""Network and training utilities for the 1D fractional Poisson fPINN.
+
+Section 4.1.1 uses the trial solution
+
+    u_hat(x) = x * (1 - x) * NN(x; mu),
+
+so the homogeneous boundary conditions are enforced exactly. The fractional
+Laplacian in the residual is discretized by the shifted GL matrices in gl.py.
+"""
+
+from typing import Callable, List, Optional
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from fraction import fractional_laplacian_1d
+
+from gl import get_gl_matrix
+from utils import forcing_term_nonsmooth, forcing_term_smooth
+
 
 class fPINN(nn.Module):
-    def __init__(self, layers, rho_func=None):
-        """
-        layers: list số neuron mỗi lớp, ví dụ [1, 20, 20, 20, 1]
-        rho_func: hàm ρ(x) để thỏa mãn BC, mặc định x(1-x) cho 1D.
-        """
+    """Feedforward tanh network with a boundary-condition factor rho(x)."""
+
+    def __init__(
+        self,
+        layer_sizes: List[int],
+        rho_func: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+    ):
         super().__init__()
-        self.layers = nn.ModuleList()
-        for i in range(len(layers)-1):
-            self.layers.append(nn.Linear(layers[i], layers[i+1]))
-            if i < len(layers)-2:
-                self.layers.append(nn.Tanh())
-        # self.layers kết hợp Linear và Tanh xen kẽ
-        # Để đơn giản, dùng Sequential
-        self.net = nn.Sequential()
-        for i in range(len(layers)-1):
-            self.net.add_module(f'linear_{i}', nn.Linear(layers[i], layers[i+1]))
-            if i < len(layers)-2:
-                self.net.add_module(f'tanh_{i}', nn.Tanh())
-        if rho_func is None:
-            self.rho = lambda x: x * (1 - x)
-        else:
-            self.rho = rho_func
 
-    def forward(self, x):
-        # x: tensor shape (batch, 1)
-        u_nn = self.net(x)
-        u = self.rho(x) * u_nn
-        return u
+        modules: List[nn.Module] = []
+        for i in range(len(layer_sizes) - 1):
+            modules.append(nn.Linear(layer_sizes[i], layer_sizes[i + 1]))
+            if i < len(layer_sizes) - 2:
+                modules.append(nn.Tanh())
+        self.net = nn.Sequential(*modules)
+        self.rho = rho_func if rho_func is not None else (lambda x: x * (1.0 - x))
+        self._init_weights()
 
-def build_loss_1d_poisson(model, x_train, f_train, N, alpha, dx, device):
+    def _init_weights(self):
+        """Glorot/Xavier uniform initialization, suitable for tanh networks."""
+        for module in self.net.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.rho(x) * self.net(x)
+
+
+def build_loss_poisson(
+    model: fPINN,
+    N: int,
+    alpha: float,
+    order: int,
+    device: torch.device,
+    smooth: bool = True,
+) -> Callable[[], torch.Tensor]:
+    """Build MSE(A_GL * u_hat(x_grid) - f(x_interior)).
+
+    For Fig. 4 and Fig. 5 in Section 4.1.1, use smooth=True, alpha=1.5,
+    and order in {1, 2, 3}. The paper sets lambda=N for this smooth example.
     """
-    Xây dựng hàm loss cho bài toán 1D fractional Poisson.
-    Trả về hàm loss (có thể gọi với model) dùng cho training.
-    """
-    # Tạo lưới đầy đủ N+1 điểm (kể cả biên)
-    x_grid = torch.linspace(0.0, 1.0, N+1, device=device).reshape(-1, 1)
-    
-    # Ma trận GL (N-1) x (N+1) bằng numpy, sau đó chuyển sang torch tensor
-    L = np.zeros((N-1, N+1))
-    cos_term = 1.0 / (2 * np.cos(np.pi * alpha / 2))
-    for i in range(1, N):
-        j = i
-        # left
-        for k in range(0, j+1):
-            idx = j - (k-1)
-            if 0 <= idx <= N:
-                L[i-1, idx] += cos_term * ((-1)**k * comb(alpha, k)) / (dx**alpha)
-        # right
-        for k in range(0, N-j+1):
-            idx = j + (k-1)
-            if 0 <= idx <= N:
-                L[i-1, idx] += cos_term * ((-1)**k * comb(alpha, k)) / (dx**alpha)
-    L_torch = torch.tensor(L, dtype=torch.float32, device=device)
-    f_train_torch = torch.tensor(f_train, dtype=torch.float32, device=device).reshape(-1,1)
-    
-    def loss_fn():
-        u_grid = model(x_grid)                # (N+1, 1)
-        lap = torch.mm(L_torch, u_grid)       # (N-1, 1)
-        residual = lap - f_train_torch
-        mse = torch.mean(residual**2)
-        return mse
+    dtype = next(model.parameters()).dtype
+    x_grid = torch.linspace(0.0, 1.0, N + 1, dtype=dtype, device=device).reshape(-1, 1)
+
+    x_interior = np.linspace(1.0 / N, 1.0 - 1.0 / N, N - 1).reshape(-1, 1)
+    forcing_fn = forcing_term_smooth if smooth else forcing_term_nonsmooth
+    f_np = forcing_fn(x_interior, alpha)
+
+    A_np = get_gl_matrix(N, alpha, order)
+    A = torch.tensor(A_np.copy(), dtype=dtype, device=device)
+    f = torch.tensor(f_np, dtype=dtype, device=device)
+
+    def loss_fn() -> torch.Tensor:
+        u_grid = model(x_grid)
+        residual = A.mm(u_grid) - f
+        return torch.mean(residual**2)
+
     return loss_fn
 
-def train(model, loss_fn, optimizer, scheduler, iterations, log_freq=1000, device='cpu'):
-    """
-    Vòng lặp training.
-    scheduler: có thể là None hoặc lr_scheduler
-    """
+
+def train(
+    model: fPINN,
+    loss_fn: Callable[[], torch.Tensor],
+    optimizer: torch.optim.Optimizer,
+    iterations: int,
+    log_freq: int = 1000,
+    log_iterations: Optional[set] = None,
+) -> dict:
+    """Train with Adam and return the final loss plus optional trace points."""
     model.train()
-    loss_history = []
-    for it in range(iterations):
+    trace = []
+    log_set = set(log_iterations) if log_iterations else set()
+
+    for it in range(1, iterations + 1):
         optimizer.zero_grad()
         loss = loss_fn()
         loss.backward()
         optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
-        if it % log_freq == 0:
-            loss_val = loss.item()
-            loss_history.append(loss_val)
-            print(f"Iter {it}, loss = {loss_val:.2e}")
-    return loss_history
+
+        if log_freq > 0 and it % log_freq == 0:
+            print(f"  iter {it:7d}  loss = {loss.item():.3e}")
+
+        if it in log_set:
+            trace.append(
+                {
+                    "iteration": it,
+                    "loss": float(loss_fn().detach().cpu()),
+                }
+            )
+
+    return {"loss_final": float(loss_fn().detach().cpu()), "trace": trace}
