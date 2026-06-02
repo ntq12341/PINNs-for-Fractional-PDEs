@@ -1,184 +1,24 @@
-"""Generate Fig. 4 and Fig. 5 style plots for Section 4.1.1.
+"""Plot Fig. 4-7 style PNG files from CSV results.
 
-The paper solves the 1D fractional Poisson equation
+Run main.py first to generate:
 
-    (-Delta)^(alpha/2) u(x) = f(x),  x in (0, 1),  u(0)=u(1)=0,
+    results/fig4_summary.csv
+    results/fig5_trace.csv
+    results/fig6_summary.csv
+    results/fig7_summary.csv
 
-with alpha=1.5 and the smooth fabricated solution u=x^3(1-x)^3. For this
-example, lambda=N, so the training grid and GL auxiliary grid coincide.
-
-This script intentionally omits the FDM curves requested by the user, but keeps
-the fPINN mean/std and lowest-loss curves for Fig. 4 and the loss/error traces
-for Fig. 5.
+This file only handles plotting. It does not train networks or write CSV data.
 """
 
 import argparse
-import csv
-import json
-import random
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
 
-from error import relative_l2_error
-from network import build_loss_poisson, fPINN
-from utils import exact_solution_poisson
+from results_io import RESULTS_DIR, read_csv
 
 
-ROOT = Path(__file__).resolve().parent
-RESULTS_DIR = ROOT / "results"
-
-
-def set_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def evaluate_model(model, device, num_points):
-    was_training = model.training
-    model.eval()
-    x = np.linspace(0.0, 1.0, num_points).reshape(-1, 1)
-    x_tensor = torch.tensor(x, dtype=next(model.parameters()).dtype, device=device)
-    with torch.no_grad():
-        pred = model(x_tensor).detach().cpu().numpy().reshape(-1)
-    if was_training:
-        model.train()
-    return relative_l2_error(pred, exact_solution_poisson(x))
-
-
-def train_once(n, alpha, order, lr, iterations, seed, layers, device, eval_points, log_points=None):
-    set_seed(seed)
-    model = fPINN(layers).to(device)
-    loss_fn = build_loss_poisson(model, N=n, alpha=alpha, order=order, device=device, smooth=True)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
-    trace = []
-    log_set = set(log_points or [])
-
-    for it in range(1, iterations + 1):
-        optimizer.zero_grad()
-        loss = loss_fn()
-        loss.backward()
-        optimizer.step()
-
-        if it in log_set:
-            current_loss = float(loss_fn().detach().cpu())
-            current_error = evaluate_model(model, device, eval_points)
-            trace.append(
-                {
-                    "iteration": it,
-                    "loss": current_loss,
-                    "relative_l2": current_error,
-                }
-            )
-
-    final_loss = float(loss_fn().detach().cpu())
-    final_error = evaluate_model(model, device, eval_points)
-    return final_loss, final_error, trace
-
-
-def parse_lr_specs(specs, default_iterations):
-    parsed = []
-    for spec in specs:
-        if ":" in spec:
-            lr_text, iter_text = spec.split(":", 1)
-            parsed.append((float(lr_text), int(iter_text)))
-        else:
-            parsed.append((float(spec), default_iterations))
-    return parsed
-
-
-def log_iterations(max_iterations):
-    values = {1, max_iterations}
-    for exp in range(0, int(np.ceil(np.log10(max_iterations))) + 1):
-        base = 10**exp
-        for mult in (1, 2, 4, 7):
-            value = mult * base
-            if 1 <= value <= max_iterations:
-                values.add(value)
-    return sorted(values)
-
-
-def write_csv(path, rows, fieldnames):
-    with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def run_figure4(args, device):
-    rows = []
-    summary = []
-    lr_specs = parse_lr_specs(args.learning_rates, args.iterations)
-
-    for order in args.orders:
-        for n in args.ns:
-            for lr, iterations in lr_specs:
-                errors = []
-                losses = []
-                for seed in args.seeds:
-                    print(f"fig4 order={order} N={n} lr={lr:g} iterations={iterations} seed={seed}")
-                    loss, error, _ = train_once(
-                        n=n,
-                        alpha=args.alpha,
-                        order=order,
-                        lr=lr,
-                        iterations=iterations,
-                        seed=seed,
-                        layers=args.layers,
-                        device=device,
-                        eval_points=args.eval_points,
-                    )
-                    errors.append(error)
-                    losses.append(loss)
-                    rows.append(
-                        {
-                            "figure": "fig4",
-                            "order": order,
-                            "N": n,
-                            "dx": 1.0 / n,
-                            "learning_rate": lr,
-                            "iterations": iterations,
-                            "seed": seed,
-                            "loss": loss,
-                            "relative_l2": error,
-                        }
-                    )
-
-                best_idx = int(np.argmin(losses))
-                summary.append(
-                    {
-                        "order": order,
-                        "N": n,
-                        "dx": 1.0 / n,
-                        "learning_rate": lr,
-                        "iterations": iterations,
-                        "mean_error": float(np.mean(errors)),
-                        "std_error": float(np.std(errors)),
-                        "best_loss_error": float(errors[best_idx]),
-                        "best_loss": float(losses[best_idx]),
-                    }
-                )
-
-    write_csv(
-        RESULTS_DIR / "fig4_raw.csv",
-        rows,
-        ["figure", "order", "N", "dx", "learning_rate", "iterations", "seed", "loss", "relative_l2"],
-    )
-    write_csv(
-        RESULTS_DIR / "fig4_summary.csv",
-        summary,
-        ["order", "N", "dx", "learning_rate", "iterations", "mean_error", "std_error", "best_loss_error", "best_loss"],
-    )
-    plot_figure4(summary, args.orders, RESULTS_DIR / "fig4_convergence.png")
-
-
-def plot_figure4(summary, orders, out_path):
+def plot_convergence(summary, orders, out_path, title):
     orders = list(orders)
     fig, axes = plt.subplots(1, len(orders), figsize=(4.5 * len(orders), 4), sharey=True)
     if len(orders) == 1:
@@ -187,18 +27,34 @@ def plot_figure4(summary, orders, out_path):
     colors = plt.cm.tab10.colors
     for panel_idx, (ax, order) in enumerate(zip(axes, orders), start=1):
         data = [row for row in summary if row["order"] == order]
-        configs = sorted({(row["learning_rate"], row["iterations"]) for row in data})
+        if not data:
+            raise ValueError(f"No Fig. 4 data found for GL order {order}. Run main.py first.")
 
-        for idx, (lr, iterations) in enumerate(configs):
+        configs = sorted(
+            {
+                (row["case"], row["width"], row["depth"], row["learning_rate"], row["iterations"])
+                for row in data
+            }
+        )
+        for idx, (case, width, depth, lr, iterations) in enumerate(configs):
             config_rows = sorted(
-                [row for row in data if row["learning_rate"] == lr and row["iterations"] == iterations],
+                [
+                    row
+                    for row in data
+                    if row["case"] == case
+                    and row["width"] == width
+                    and row["depth"] == depth
+                    and row["learning_rate"] == lr
+                    and row["iterations"] == iterations
+                ],
                 key=lambda item: item["N"],
             )
             x = np.array([row["N"] for row in config_rows])
             y = np.array([row["mean_error"] for row in config_rows])
             yerr = np.array([row["std_error"] for row in config_rows])
             color = colors[idx % len(colors)]
-            ax.plot(x, y, marker="o", color=color, label=f"lr={lr:g}, it={iterations:g}")
+            label = f"{case}, w={width}, d={depth}, lr={lr:g}, it={iterations:g}"
+            ax.plot(x, y, marker="o", color=color, label=label)
             ax.fill_between(x, np.maximum(y - yerr, 1e-16), y + yerr, color=color, alpha=0.2)
 
         best_rows = []
@@ -221,50 +77,40 @@ def plot_figure4(summary, orders, out_path):
 
     axes[0].set_ylabel("L2 relative error")
     axes[-1].legend(fontsize=8)
-    fig.suptitle("Fig. 4 style: fPINN convergence without FDM curves")
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
 
 
-def run_figure5(args, device):
-    rows = []
-    points = log_iterations(args.fig5_iterations)
+def plot_trace(rows, out_path, title):
+    if not rows:
+        raise ValueError("No Fig. 5 data found. Run main.py first.")
 
-    for n in args.fig5_ns:
-        print(f"fig5 N={n} lr={args.fig5_lr:g} iterations={args.fig5_iterations} seed={args.fig5_seed}")
-        _, _, trace = train_once(
-            n=n,
-            alpha=args.alpha,
-            order=3,
-            lr=args.fig5_lr,
-            iterations=args.fig5_iterations,
-            seed=args.fig5_seed,
-            layers=args.layers,
-            device=device,
-            eval_points=args.eval_points,
-            log_points=points,
-        )
-        for item in trace:
-            rows.append({"N": n, **item})
-
-    write_csv(RESULTS_DIR / "fig5_trace.csv", rows, ["N", "iteration", "loss", "relative_l2"])
-    plot_figure5(rows, RESULTS_DIR / "fig5_loss_error.png")
-
-
-def plot_figure5(rows, out_path):
     ns = sorted({row["N"] for row in rows})
     fig, axes = plt.subplots(1, len(ns), figsize=(5 * len(ns), 4), sharey=False)
     if len(ns) == 1:
         axes = [axes]
 
+    colors = plt.cm.tab10.colors
     for ax, n in zip(axes, ns):
-        data = sorted([row for row in rows if row["N"] == n], key=lambda item: item["iteration"])
-        x = np.array([row["iteration"] for row in data])
-        loss = np.array([row["loss"] for row in data])
-        err = np.array([row["relative_l2"] for row in data])
-        ax.plot(x, loss, "b-", label="MSE loss")
-        ax.plot(x, err, "r--", label="L2 relative error")
+        n_rows = [row for row in rows if row["N"] == n]
+        configs = sorted({(row["case"], row["width"], row["depth"]) for row in n_rows})
+        for idx, (case, width, depth) in enumerate(configs):
+            data = sorted(
+                [
+                    row
+                    for row in n_rows
+                    if row["case"] == case and row["width"] == width and row["depth"] == depth
+                ],
+                key=lambda item: item["iteration"],
+            )
+            x = np.array([row["iteration"] for row in data])
+            loss = np.array([row["loss"] for row in data])
+            err = np.array([row["relative_l2"] for row in data])
+            color = colors[idx % len(colors)]
+            label = f"{case}, w={width}, d={depth}"
+            ax.plot(x, loss, "-", color=color, label=f"loss: {label}")
+            ax.plot(x, err, "--", color=color, label=f"L2: {label}")
         ax.set_xscale("log")
         ax.set_yscale("log")
         ax.set_title(f"N = {n}")
@@ -273,54 +119,184 @@ def plot_figure5(rows, out_path):
         ax.legend(fontsize=8)
 
     axes[0].set_ylabel("value")
-    fig.suptitle("Fig. 5 style: loss and relative error without FDM line")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def plot_fig6(rows, out_path):
+    if not rows:
+        raise ValueError("No Fig. 6 data found. Run main.py first.")
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
+    colors = plt.cm.tab10.colors
+    panels = [
+        ("lambda_sweep", axes[0], "lambda", "lambda", "(a) fixed N, varying lambda"),
+        ("N_sweep", axes[1], "N", "N", "(b) fixed lambda, varying N"),
+    ]
+
+    for mode, ax, x_key, xlabel, title in panels:
+        data = [row for row in rows if row["mode"] == mode]
+        if not data:
+            raise ValueError(f"No Fig. 6 data found for mode={mode}.")
+        configs = sorted(
+            {
+                (row["width"], row["depth"], row["learning_rate"], row["iterations"])
+                for row in data
+            }
+        )
+        for idx, (width, depth, lr, iterations) in enumerate(configs):
+            config_rows = sorted(
+                [
+                    row
+                    for row in data
+                    if row["width"] == width
+                    and row["depth"] == depth
+                    and row["learning_rate"] == lr
+                    and row["iterations"] == iterations
+                ],
+                key=lambda item: item[x_key],
+            )
+            x = np.array([row[x_key] for row in config_rows])
+            y = np.array([row["mean_error"] for row in config_rows])
+            yerr = np.array([row["std_error"] for row in config_rows])
+            color = colors[idx % len(colors)]
+            label = f"w={width}, d={depth}, lr={lr:g}, it={iterations:g}"
+            ax.plot(x, y, marker="o", color=color, label=label)
+            ax.fill_between(x, np.maximum(y - yerr, 1e-16), y + yerr, color=color, alpha=0.2)
+
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.grid(True, which="both", alpha=0.25)
+
+    axes[0].set_ylabel("L2 relative error")
+    axes[-1].legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def plot_fig7(rows, out_path):
+    if not rows:
+        raise ValueError("No Fig. 7 data found. Run main.py first.")
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2))
+
+    grid_rows = [row for row in rows if row["mode"] == "grid"]
+    if not grid_rows:
+        raise ValueError("No Fig. 7 grid data found.")
+    widths = sorted({row["width"] for row in grid_rows})
+    depths = sorted({row["depth"] for row in grid_rows})
+    heatmap = np.full((len(widths), len(depths)), np.nan)
+    for row in grid_rows:
+        i = widths.index(row["width"])
+        j = depths.index(row["depth"])
+        heatmap[i, j] = row["mean_error"]
+
+    im = axes[0].imshow(heatmap, origin="lower", aspect="auto")
+    axes[0].set_xticks(range(len(depths)), depths)
+    axes[0].set_yticks(range(len(widths)), widths)
+    axes[0].set_xlabel("Depth")
+    axes[0].set_ylabel("Width")
+    axes[0].set_title("(a) depth-width sweep")
+    fig.colorbar(im, ax=axes[0], label="mean L2 relative error")
+
+    line_specs = [
+        ("narrow_depth_sweep", "depth", "Narrow NN: varying depth"),
+        ("shallow_width_sweep", "width", "Shallow NN: varying width"),
+    ]
+    colors = plt.cm.tab10.colors
+    for idx, (mode, x_key, label) in enumerate(line_specs):
+        data = sorted([row for row in rows if row["mode"] == mode], key=lambda item: item[x_key])
+        if not data:
+            continue
+        x = np.array([row[x_key] for row in data])
+        y = np.array([row["mean_error"] for row in data])
+        yerr = np.array([row["std_error"] for row in data])
+        color = colors[idx % len(colors)]
+        axes[1].plot(x, y, marker="o", color=color, label=label)
+        axes[1].fill_between(x, np.maximum(y - yerr, 1e-16), y + yerr, color=color, alpha=0.2)
+
+    axes[1].set_yscale("log")
+    axes[1].set_xlabel("Depth or width")
+    axes[1].set_ylabel("L2 relative error")
+    axes[1].set_title("(b) extreme architecture sweeps")
+    axes[1].grid(True, which="both", alpha=0.25)
+    axes[1].legend(fontsize=8)
+
     fig.tight_layout()
     fig.savefig(out_path, dpi=300)
     plt.close(fig)
 
 
 def build_parser():
-    parser = argparse.ArgumentParser(description="Generate Fig. 4/5 style plots for the 1D fractional Poisson fPINN.")
-    parser.add_argument("--alpha", type=float, default=1.5)
-    parser.add_argument("--ns", type=int, nargs="+", default=[10, 20, 40])
-    parser.add_argument("--orders", type=int, nargs="+", default=[1, 2, 3])
-    parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
-    parser.add_argument("--learning-rates", nargs="+", default=["1e-3", "1e-4"])
-    parser.add_argument("--iterations", type=int, default=20000)
-    parser.add_argument("--fig5-ns", type=int, nargs="+", default=[10, 20])
-    parser.add_argument("--fig5-lr", type=float, default=1e-6)
-    parser.add_argument("--fig5-iterations", type=int, default=100000)
-    parser.add_argument("--fig5-seed", type=int, default=0)
-    parser.add_argument("--eval-points", type=int, default=1000)
-    parser.add_argument("--width", type=int, default=20)
-    parser.add_argument("--depth", type=int, default=4, help="Number of hidden layers.")
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--only", choices=["fig4", "fig5", "both"], default="both")
+    parser = argparse.ArgumentParser(description="Plot Poisson fPINN figures from CSV results.")
+    parser.add_argument("--orders", type=int, nargs="+", default=None)
+    parser.add_argument("--only", choices=["fig4", "fig5", "fig6", "fig7", "smooth", "nonsmooth", "both"], default="both")
     return parser
+
+
+def maybe_plot_convergence(csv_name, png_name, orders, title):
+    csv_path = RESULTS_DIR / csv_name
+    if not csv_path.exists():
+        print(f"Skip {png_name}: missing {csv_path}")
+        return
+    summary = read_csv(csv_path)
+    plot_orders = orders if orders is not None else sorted({row["order"] for row in summary})
+    plot_convergence(summary, plot_orders, RESULTS_DIR / png_name, title)
+
+
+def maybe_plot_trace(csv_name, png_name, title):
+    csv_path = RESULTS_DIR / csv_name
+    if not csv_path.exists():
+        print(f"Skip {png_name}: missing {csv_path}")
+        return
+    trace = read_csv(csv_path)
+    plot_trace(trace, RESULTS_DIR / png_name, title)
 
 
 def main():
     args = build_parser().parse_args()
-    args.orders = sorted(set(args.orders))
-    invalid_orders = [order for order in args.orders if order not in (1, 2, 3)]
-    if invalid_orders:
-        raise ValueError(f"GL order must be 1, 2, or 3. Invalid values: {invalid_orders}")
+    requested = set()
 
-    torch.set_default_dtype(torch.float64)
-    args.layers = [1] + [args.width] * args.depth + [1]
+    if args.only == "both":
+        requested.update(["fig4", "fig5", "fig6", "fig7"])
+    elif args.only == "smooth":
+        requested.update(["fig4", "fig5"])
+    elif args.only == "nonsmooth":
+        requested.update(["fig6", "fig7"])
+    else:
+        requested.add(args.only)
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    device = torch.device(args.device)
+    if "fig4" in requested:
+        maybe_plot_convergence(
+            "fig4_summary.csv",
+            "fig4_convergence.png",
+            args.orders,
+            "Fig. 4 style: smooth fPINN convergence without FDM curves",
+        )
+    if "fig5" in requested:
+        maybe_plot_trace(
+            "fig5_trace.csv",
+            "fig5_loss_error.png",
+            "Fig. 5 style: smooth loss and relative error without FDM line",
+        )
+    if "fig6" in requested:
+        csv_path = RESULTS_DIR / "fig6_summary.csv"
+        if not csv_path.exists():
+            print(f"Skip fig6_convergence.png: missing {csv_path}")
+        else:
+            plot_fig6(read_csv(csv_path), RESULTS_DIR / "fig6_convergence.png")
+    if "fig7" in requested:
+        csv_path = RESULTS_DIR / "fig7_summary.csv"
+        if not csv_path.exists():
+            print(f"Skip fig7_architecture.png: missing {csv_path}")
+        else:
+            plot_fig7(read_csv(csv_path), RESULTS_DIR / "fig7_architecture.png")
 
-    with (RESULTS_DIR / "config.json").open("w") as f:
-        json.dump(vars(args), f, indent=2, default=str)
-
-    if args.only in ("fig4", "both"):
-        run_figure4(args, device)
-    if args.only in ("fig5", "both"):
-        run_figure5(args, device)
-
-    print(f"Saved results to {RESULTS_DIR}")
+    print(f"Saved PNG figures to {RESULTS_DIR}")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,8 @@
 {
   "alpha": 1.5,
+  "cases": [
+    "smooth"
+  ],
   "ns": [
     10,
     20,
@@ -21,19 +24,64 @@
   ],
   "iterations": 20000,
   "fig5_ns": [
-    10
+    10,
+    20
   ],
   "fig5_lr": 0.001,
   "fig5_iterations": 2,
   "fig5_seed": 0,
-  "eval_points": 20,
-  "width": 4,
-  "depth": 1,
-  "device": "cpu",
-  "only": "fig5",
-  "layers": [
-    1,
+  "fig6_fixed_n": 100,
+  "fig6_lambdas": [
+    20,
+    40,
+    80,
+    160
+  ],
+  "fig6_fixed_lambda": 100,
+  "fig6_ns": [
+    10,
+    20,
+    40,
+    80
+  ],
+  "fig7_n": 100,
+  "fig7_lambda": 200,
+  "fig7_widths": [
+    20,
+    30,
+    40
+  ],
+  "fig7_depths": [
+    2,
     4,
+    6,
+    8
+  ],
+  "fig7_narrow_width": 10,
+  "fig7_line_depths": [
+    2,
+    4,
+    8,
+    16,
+    24,
+    32,
+    40
+  ],
+  "fig7_shallow_depth": 2,
+  "fig7_line_widths": [
+    10,
+    20,
+    30,
+    40,
+    50
+  ],
+  "eval_points": 20,
+  "widths": [
+    4
+  ],
+  "depths": [
     1
-  ]
+  ],
+  "device": "cpu",
+  "only": "fig5"
 }

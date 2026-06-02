@@ -13,6 +13,7 @@ from typing import Callable, List, Optional
 import numpy as np
 import torch
 import torch.nn as nn
+from scipy.special import binom
 
 from gl import get_gl_matrix
 from utils import forcing_term_nonsmooth, forcing_term_smooth
@@ -75,6 +76,53 @@ def build_loss_poisson(
     def loss_fn() -> torch.Tensor:
         u_grid = model(x_grid)
         residual = A.mm(u_grid) - f
+        return torch.mean(residual**2)
+
+    return loss_fn
+
+
+def build_loss_poisson_lambda(
+    model: fPINN,
+    N: int,
+    alpha: float,
+    lambda_gl: float,
+    device: torch.device,
+    smooth: bool = True,
+) -> Callable[[], torch.Tensor]:
+    """Build first-order shifted GL loss with auxiliary density lambda.
+
+    This matches the setup used for the non-smooth fabricated solution in
+    Section 4.1.1, where training points x_j=j/N and auxiliary GL points are
+    controlled by lambda independently of N.
+    """
+    dtype = next(model.parameters()).dtype
+    x_interior_np = np.linspace(1.0 / N, 1.0 - 1.0 / N, N - 1).reshape(-1, 1)
+    forcing_fn = forcing_term_smooth if smooth else forcing_term_nonsmooth
+    f = torch.tensor(forcing_fn(x_interior_np, alpha), dtype=dtype, device=device)
+    cos_scale = 1.0 / (2.0 * np.cos(np.pi * alpha / 2.0))
+
+    terms = []
+    for xj in x_interior_np.reshape(-1):
+        row_terms = []
+        for distance, sign in ((xj, -1.0), (1.0 - xj, 1.0)):
+            m = max(1, int(np.ceil(lambda_gl * distance)))
+            h = distance / m
+            for k in range(m + 1):
+                point = xj + sign * (k - 1) * h
+                if 0.0 <= point <= 1.0:
+                    coeff = cos_scale * ((-1) ** k) * binom(alpha, k) / (h**alpha)
+                    row_terms.append((point, coeff))
+        terms.append(row_terms)
+
+    def loss_fn() -> torch.Tensor:
+        residuals = []
+        for row_terms in terms:
+            value = torch.zeros(1, 1, dtype=dtype, device=device)
+            for point, coeff in row_terms:
+                x = torch.tensor([[point]], dtype=dtype, device=device)
+                value = value + coeff * model(x)
+            residuals.append(value)
+        residual = torch.cat(residuals, dim=0) - f
         return torch.mean(residual**2)
 
     return loss_fn
