@@ -1,0 +1,2 @@
+case,point_type,lambda_t,lambda_x,alpha,gamma,c,velocity,forcing,seed,loss,relative_l2
+fig9,scattered(4),3.0,3.0,1.5,0.5,1.0,0.1,BB,0,0.5954016313506967,0.9095813955748048
