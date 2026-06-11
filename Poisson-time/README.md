@@ -24,6 +24,164 @@ Advection term: autograd u_x
 
 The forcing term is manufactured by applying the same discrete operators to the exact solution. This keeps the training residual consistent with the implemented Caputo/GL operators.
 
+## Cases
+
+`Poisson-time` currently runs three different cases.
+
+Quick summary:
+
+```text
+fig8_space:
+  space-fractional ADE
+  alpha = 1.5, gamma = 1.0
+  fractional in space, ordinary in time
+
+fig8_time:
+  time-fractional ADE
+  alpha = 2.0, gamma = 0.5
+  Caputo in time, ordinary in space
+
+fig9:
+  space-time-fractional ADE
+  alpha = 1.5, gamma = 0.5
+  Caputo in time and fractional in space
+```
+
+### `fig8_space`
+
+This is the 1D space-fractional ADE used in Fig. 8(a).
+
+```text
+alpha = 1.5
+gamma = 1.0
+c = 1.0
+velocity = 0.0
+forcing = WB
+```
+
+Meaning:
+
+```text
+alpha = 1.5  -> fractional operator in space
+gamma = 1.0  -> ordinary first-order time derivative
+v = 0        -> no advection
+WB forcing   -> manufactured forcing is known at the training points
+```
+
+Residual form:
+
+```text
+u_t + c (-Delta)^(alpha/2) u - f = 0
+```
+
+Operators used:
+
+```text
+u_t                      -> autograd in t
+(-Delta)^(alpha/2) u     -> first-order shifted GL in x
+```
+
+### `fig8_time`
+
+This is the 1D time-fractional ADE used in Fig. 8(b).
+
+```text
+alpha = 2.0
+gamma = 0.5
+c = 1.0
+velocity = 0.0
+forcing = WB
+```
+
+Meaning:
+
+```text
+alpha = 2.0  -> ordinary second-order spatial operator
+gamma = 0.5  -> Caputo fractional derivative in time
+v = 0        -> no advection
+WB forcing   -> manufactured forcing is known at the training points
+```
+
+Residual form:
+
+```text
+D_t^gamma u + c (-Delta) u - f = 0
+```
+
+Operators used:
+
+```text
+D_t^gamma u   -> Caputo L1 scheme
+(-Delta) u    -> autograd second derivative in x
+```
+
+### `fig9`
+
+This is the 1D space-time-fractional ADE used in Fig. 9.
+
+```text
+alpha = 1.5
+gamma = 0.5
+c = 1.0
+velocity = 0.1
+forcing = BB
+```
+
+Meaning:
+
+```text
+alpha = 1.5  -> fractional operator in space
+gamma = 0.5  -> Caputo fractional derivative in time
+v = 0.1      -> advection is included
+BB forcing   -> forcing is available only at scattered training points
+```
+
+Residual form:
+
+```text
+D_t^gamma u + c (-Delta)^(alpha/2) u + v u_x - f = 0
+```
+
+Operators used:
+
+```text
+D_t^gamma u              -> Caputo L1 scheme
+(-Delta)^(alpha/2) u     -> first-order shifted GL in x
+u_x                      -> autograd in x
+```
+
+## Training points and lambda parameters
+
+For Fig. 8, the code runs both:
+
+```text
+scattered training points
+lattice-like training points
+```
+
+For Fig. 9, the code runs only:
+
+```text
+scattered training points
+```
+
+The parameter `lambda_t` controls the number of auxiliary time points in the Caputo L1 scheme.
+
+The parameter `lambda_x` controls the number of auxiliary spatial points in the GL operator.
+
+The current mapping is:
+
+```text
+fig8_space:
+  lambda_x = lambda_t
+
+fig8_time:
+  lambda_x = lambda_t^((2-gamma)/2)
+
+fig9:
+  lambda_x = lambda_t
+```
+
 ## Files
 
 ```text
@@ -35,6 +193,48 @@ figures.py    plot PNG figures from CSV
 ```
 
 ## Run
+
+Run Fig. 8:
+
+```powershell
+python Poisson-time\main.py --only fig8
+python Poisson-time\figures.py --only fig8
+```
+
+This runs:
+
+```text
+fig8_space
+fig8_time
+```
+
+Run Fig. 9:
+
+```powershell
+python Poisson-time\main.py --only fig9
+python Poisson-time\figures.py --only fig9
+```
+
+This runs:
+
+```text
+fig9
+```
+
+Run all cases:
+
+```powershell
+python Poisson-time\main.py --only both
+python Poisson-time\figures.py --only both
+```
+
+This runs:
+
+```text
+fig8_space
+fig8_time
+fig9
+```
 
 Quick Fig. 8 smoke test:
 
